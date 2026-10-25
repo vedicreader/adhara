@@ -1,6 +1,6 @@
 [package]
 name = "adhara"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Native FTS5 tokenizer and hybrid FTS + vector search for SQLite, as one extension for Python and Swift"
 license = "MIT"
