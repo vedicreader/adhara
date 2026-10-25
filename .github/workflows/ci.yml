@@ -34,6 +34,7 @@ jobs:
   build:
     needs: test
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-14, macos-15-intel]
     runs-on: ${{ matrix.os }}
@@ -42,7 +43,7 @@ jobs:
       - uses: PyO3/maturin-action@v1
         with:
           args: --profile dist --out dist
-          manylinux: auto
+          manylinux: 2_28   # usearch's numkong needs a newer gcc than manylinux2014 has
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.os }}
