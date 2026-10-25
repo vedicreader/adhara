@@ -73,7 +73,19 @@ Run `python bench/bench_hybrid.py`. litesearch builds a store on disk with an HN
 
 Without a filter, the time is mostly bm25 over every FTS5 match. That part is the same on both sides. At 200,000 rows the laghu corpus repeats each chunk about 130 times. Each query matches many rows. The text of the repos has fewer repeats.
 
-With a filter, litesearch scans every row in SQL. adhara ranks every vector in memory on all cores, with f32 dot products in 16 lanes. Then it checks the filter row by row in distance order until it has `k` rows. It reads the FTS5 matches in rank order the same way.
+With a filter, litesearch scans every row in SQL. adhara ranks every vector in memory on all cores, with f32 dot products in 16 lanes. Then it checks the filter on one window of candidates at a time, in distance order, until it has `k` rows. The first window holds `2k` candidates, at least 16. Each later window is four times larger. One SQL statement checks a window: the candidates are a `VALUES` table, and `CROSS JOIN` makes SQLite look them up by rowid, so a window costs its own size. When a window would hold more than 1/128 of the rows (at least 1,024), adhara reads every passing rowid once and checks the rest in memory. It reads the FTS5 matches in rank order the same way.
+
+The table shows one query on a snapshot of a vishalakshi vault: 181,290 chunks of 256-dimension f16 vectors, k = 30, on a 14-core arm64 Mac. The filters are vishalakshi's document-kind filters and a page filter. Each number is the mean of 10 runs after one warm-up run, from three repeats. `bench/legs.py` times each search with the json filter of `bench_hybrid.py`.
+
+| filter | rows that pass | filter alone | litesearch scan | adhara |
+|---|---|---|---|---|
+| one document kind | 6,727 | 1.3 ms | 3.9 ms | 7.3 to 7.7 ms |
+| three document kinds | 78,710 | 13.6 ms | 44.8 ms | 3.0 to 3.3 ms |
+| `page <= 2` | 125,107 | 70.0 ms | 82.5 ms | 3.0 to 3.1 ms |
+
+A filter that few rows pass is slower in adhara. SQLite reads only those rows through an index. adhara learns that the filter is selective only when its windows come back almost empty.
+
+adhara reads the HNSW index file the first time a search uses it, not each time it reads the vectors.
 
 `tests/test_hybrid.py` compares each search and the fused list with litesearch. It covers f16 and f32, HNSW and exact search, with and without `where`, and the metrics cosine, inner and sqeuclidean. The full-text results are identical. The HNSW results are identical. The exact results have the same distance at every rank. Two rows can tie within 1e-5. Then the two kernels can put them in a different order.
 

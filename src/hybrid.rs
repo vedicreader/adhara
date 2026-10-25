@@ -3,7 +3,7 @@
 use half::{f16, slice::HalfFloatSliceExt};
 use rusqlite::vtab::{Context, Filters, IndexConstraintOp, IndexInfo, Module, VTab, VTabConnection, VTabCursor};
 use rusqlite::{Connection, OptionalExtension, Result, ffi};
-use std::{borrow::Cow, cell::RefCell, collections::{HashMap, HashSet}, ffi::{CStr, c_int}, rc::Rc};
+use std::{borrow::Cow, cell::RefCell, collections::{HashMap, HashSet}, ffi::{CStr, c_int}, rc::Rc, sync::OnceLock};
 use usearch::{Index, IndexOptions, MetricKind, ScalarKind};
 
 fn err(e: impl ToString) -> rusqlite::Error { rusqlite::Error::ModuleError(e.to_string()) }
@@ -50,11 +50,17 @@ fn l2sq(a: &[f32], b: &[f32]) -> f32 {
     acc.iter().sum::<f32>() + a[t..].iter().zip(&b[t..]).map(|(x, y)| (x - y) * (x - y)).sum::<f32>()
 }
 
-/// A store's vectors, raw, with norms, plus the HNSW sidecar when litesearch saved a fresh one.
-pub struct Vecs { ids: Vec<i64>, raw: Vec<u8>, norms: Vec<f32>, dim: usize, dt: Dtype, ann: Option<Index>, stamp: (u64, i64) }
+/// A store's vectors, raw, with norms, plus the HNSW sidecar when litesearch saved a fresh one, read on first use.
+pub struct Vecs { store: String, ids: Vec<i64>, raw: Vec<u8>, norms: Vec<f32>, dim: usize, dt: Dtype, m: Metric, ann: OnceLock<Option<Index>>, stamp: (u64, i64) }
 
 impl Vecs {
     fn row(&self, i: usize, buf: &mut [f32]) { let w = self.dim * self.dt.size(); to_f32(&self.raw[i * w..(i + 1) * w], self.dt, buf) }
+
+    /// The HNSW sidecar, read the first time a search uses it.
+    fn ann(&self, c: &Connection) -> Result<Option<&Index>> {
+        if self.ann.get().is_none() { let _ = self.ann.set(sidecar(c, &self.store, self.dt, self.m)?); }
+        Ok(self.ann.get().and_then(Option::as_ref))
+    }
 
     /// Distance from `qv` to every row, as (distance, row position), on all cores; usearch's definitions.
     fn dists(&self, qv: &[f32], m: Metric) -> Vec<(f32, u32)> {
@@ -81,8 +87,8 @@ impl Vecs {
     }
 
     /// Exact `k` nearest rowids that `keep` passes, widening the candidate pool until `k` pass; ties by rowid.
-    /// `keep` gets each window of candidates at once and returns those that pass; None passes every row.
-    fn exact(&self, qv: &[f32], m: Metric, k: usize, mut keep: Option<&mut Keep>) -> Result<Vec<(i64, f32)>> {
+    /// `keep` checks each window of candidates at once; None passes every row.
+    fn exact(&self, qv: &[f32], m: Metric, k: usize, mut keep: Option<&mut Filter>) -> Result<Vec<(i64, f32)>> {
         let mut d = self.dists(qv, m);
         let cmp = |a: &(f32, u32), b: &(f32, u32)| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1));
         let (mut out, mut done, mut pool) = (vec![], 0, pool(k));
@@ -91,7 +97,7 @@ impl Vecs {
             if n < d.len() { d[done..].select_nth_unstable_by(n - done - 1, cmp); }
             d[done..n].sort_unstable_by(cmp);
             let ids: Vec<i64> = d[done..n].iter().map(|&(_, i)| self.ids[i as usize]).collect();
-            let ok = keep.as_mut().map(|f| f(&ids)).transpose()?;
+            let ok = keep.as_mut().map(|f| f.pass(&ids)).transpose()?;
             for (&(x, _), id) in d[done..n].iter().zip(ids) {
                 if ok.as_ref().is_none_or(|s| s.contains(&id)) { out.push((id, x)); if out.len() == k { break } }
             }
@@ -101,8 +107,32 @@ impl Vecs {
     }
 }
 
-/// The rowids of a window of candidates that pass a filter.
-type Keep<'a> = dyn FnMut(&[i64]) -> Result<HashSet<i64>> + 'a;
+/// Which candidate rowids pass an SQL filter on a store's rows. It asks SQLite one window of candidates at a time.
+/// A window over `big` rows reads every passing rowid once instead, and later windows are checked against that set.
+struct Filter<'a> { c: &'a Connection, store: String, w: &'a str, big: usize, all: Option<HashSet<i64>> }
+
+impl<'a> Filter<'a> {
+    /// `big` is 1/128 of the store's rowids, at least 1,024, read from the end of the rowid index.
+    fn new(c: &'a Connection, store: &str, w: &'a str) -> Result<Self> {
+        let top: Option<i64> = c.query_row(&format!("select max(rowid) from {}", q(store)), [], |r| r.get(0))?;
+        Ok(Filter { c, store: store.to_string(), w, big: (top.unwrap_or(0).max(0) as usize / 128).max(1024), all: None })
+    }
+
+    /// The rowids of `ids` that pass. CROSS JOIN makes SQLite visit the candidates first, so a window costs its size
+    /// and not a scan of the rows the filter selects.
+    fn pass(&mut self, ids: &[i64]) -> Result<HashSet<i64>> {
+        if self.all.is_none() && ids.len() > self.big {
+            let sql = format!("select rowid from {} where ({})", q(&self.store), self.w);
+            self.all = Some(self.c.prepare(&sql)?.query_map([], |r| r.get(0))?.collect::<Result<_>>()?);
+        }
+        if let Some(a) = &self.all { return Ok(ids.iter().copied().filter(|i| a.contains(i)).collect()) }
+        if ids.is_empty() { return Ok(HashSet::new()) }
+        let vals = ids.iter().map(|i| format!("({i})")).collect::<Vec<_>>().join(",");
+        let sql = format!("with _adhara_c(_adhara_rid) as (values {vals}) select _adhara_rid from _adhara_c cross join {} on rowid = _adhara_rid where ({})",
+                          q(&self.store), self.w);
+        self.c.prepare(&sql)?.query_map([], |r| r.get(0))?.collect()
+    }
+}
 
 /// The first window of candidates checked against a filter; each later window is four times larger.
 fn pool(k: usize) -> usize { (k * 2).max(16) }
@@ -135,10 +165,9 @@ fn load(c: &Connection, store: &str, col: &str, dt: Dtype, m: Metric) -> Result<
         raw.extend_from_slice(b);
     }
     let dim = w / dt.size();
-    let mut v = Vecs { ids, raw, norms: vec![], dim, dt, ann: None, stamp };
+    let mut v = Vecs { store: store.to_string(), ids, raw, norms: vec![], dim, dt, m, ann: OnceLock::new(), stamp };
     let mut buf = vec![0f32; dim];
     v.norms = (0..v.ids.len()).map(|i| { v.row(i, &mut buf); dot(&buf, &buf).sqrt() }).collect();
-    v.ann = sidecar(c, store, dt, m)?;
     Ok(v)
 }
 
@@ -175,14 +204,7 @@ impl Hybrid {
 
     fn run(&self, a: &Args) -> Result<Vec<Hit>> {
         let (c, store, k) = (&self.db, a.store.as_str(), a.k);
-        // one statement for each window of candidates, so an uncorrelated subquery in the filter runs once a window
-        let mut keep = a.filter.as_ref().map(|w| {
-            let head = format!("select rowid from {} where rowid in (", q(store));
-            move |ids: &[i64]| -> Result<HashSet<i64>> {
-                let list = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
-                c.prepare(&format!("{head}{list}) and ({w})"))?.query_map([], |r| r.get(0))?.collect()
-            }
-        });
+        let mut keep = a.filter.as_deref().map(|w| Filter::new(c, store, w)).transpose()?;
         let mut fts = vec![];
         if let Some(fq) = a.q.as_ref().filter(|s| !s.trim().is_empty()) {
             let f = q(&format!("{store}_fts"));
@@ -192,7 +214,7 @@ impl Hybrid {
             while fts.len() < k {
                 let mut ids = Vec::with_capacity(n);
                 while ids.len() < n { let Some(r) = rows.next()? else { break }; ids.push(r.get::<_, i64>(0)?) }
-                let ok = keep.as_mut().map(|f| f(&ids)).transpose()?;
+                let ok = keep.as_mut().map(|f| f.pass(&ids)).transpose()?;
                 for &id in &ids { if ok.as_ref().is_none_or(|s| s.contains(&id)) { fts.push(id); if fts.len() == k { break } } }
                 if ids.len() < n { break }
                 n *= 4;
@@ -205,9 +227,10 @@ impl Hybrid {
                 if b.len() != v.dim * a.dtype.size() { return Err(err(format!("query has {} bytes, {store} rows have {}", b.len(), v.dim * a.dtype.size()))) }
                 let mut qv = vec![0f32; v.dim];
                 to_f32(b, a.dtype, &mut qv);
-                vec = match (keep.is_some(), v.ann.as_ref().filter(|_| a.ann)) {
+                let ix = if keep.is_none() && a.ann { v.ann(c)? } else { None };
+                vec = match (keep.as_mut(), ix) {
                     // as litesearch's ann_search: 2k candidates, keys of deleted rows dropped, the first k kept
-                    (false, Some(ix)) => {
+                    (None, Some(ix)) => {
                         let m = ix.search(&qv, 2 * k).map_err(err)?;
                         let mut live = c.prepare_cached(&format!("select 1 from {} where rowid=?1", q(store)))?;
                         let mut out = Vec::with_capacity(k);
@@ -217,8 +240,8 @@ impl Hybrid {
                         }
                         out
                     }
-                    (false, None) => v.exact(&qv, a.metric, k, None)?,
-                    (true, _) => v.exact(&qv, a.metric, k, keep.as_mut().map(|f| f as &mut Keep))?,
+                    (None, None) => v.exact(&qv, a.metric, k, None)?,
+                    (Some(f), _) => v.exact(&qv, a.metric, k, Some(f))?,
                 };
             }
         }

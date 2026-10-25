@@ -5,6 +5,7 @@ from litesearch.utils import hash_embed
 from litesearch.data import pre
 
 W = 'json_extract(metadata, "$.g") = 3'
+RARE = 'rowid % 97 = 0'   # so few rows pass that adhara reads every passing rowid at once
 SQL = 'select id, dist from adhara_hybrid(?, ?, ?, ?, ?, ?, ?)'
 
 def mk(path, name, ann, dtype, texts):
@@ -42,7 +43,7 @@ def same_up_to_ties(want, got, eps=1e-5):
 
 @pytest.mark.parametrize('ann', [False, True])
 @pytest.mark.parametrize('dt', [np.float16, np.float32])
-@pytest.mark.parametrize('where', [None, W])
+@pytest.mark.parametrize('where', [None, W, RARE])
 def test_legs_and_fused(stores, queries, ann, dt, where):
     db, sfx, ties = stores[(ann, dt)], 'f16' if dt == np.float16 else 'f32', 0
     for q in queries:
