@@ -105,7 +105,7 @@ impl Vecs {
 type Keep<'a> = dyn FnMut(&[i64]) -> Result<HashSet<i64>> + 'a;
 
 /// The first window of candidates checked against a filter; each later window is four times larger.
-fn pool(k: usize) -> usize { (k * 8).max(256) }
+fn pool(k: usize) -> usize { (k * 2).max(16) }
 
 fn stamp(c: &Connection) -> Result<(u64, i64)> { Ok((c.total_changes(), c.query_row("pragma data_version", [], |r| r.get(0))?)) }
 
