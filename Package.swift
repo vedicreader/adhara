@@ -10,7 +10,7 @@ let core: Target = FileManager.default.fileExists(atPath: "\(Context.packageDire
     ? .binaryTarget(name: "AdharaCore", path: local)
     : .binaryTarget(name: "AdharaCore",
                     url: "https://github.com/vedicreader/adhara/releases/download/v0.1.0/AdharaCore.xcframework.zip",
-                    checksum: "0000000000000000000000000000000000000000000000000000000000000000")
+                    checksum: "a4f5a0add04cbc7b50164cf96671c51cdff15ba1ff01238b51680a0f7e57c409")
 
 let package = Package(
     name: "Adhara",
