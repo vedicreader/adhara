@@ -93,11 +93,12 @@ public final class Database {
     }
 
     /// Hybrid search on a litesearch store: the FTS5 leg for `fts`, the vector leg for `vector`, fused by RRF.
+    /// `ann: false` scans every vector exactly instead of using the HNSW sidecar.
     public func search(store: String = "store", fts: String?, vector: Data?, k: Int = 10, filter: String? = nil,
-                       dtype: String = "f16", metric: String = "cosine") throws -> [Hit] {
+                       dtype: String = "f16", metric: String = "cosine", ann: Bool = true) throws -> [Hit] {
         let args: [Value] = [.text(store), fts.map(Value.text) ?? .null, vector.map(Value.blob) ?? .null, .int(Int64(k)),
-                             filter.map(Value.text) ?? .null, .text(dtype), .text(metric)]
-        return try query("select id, score, fts_rank, vec_rank, dist from adhara_hybrid(?, ?, ?, ?, ?, ?, ?)", args).map { r in
+                             filter.map(Value.text) ?? .null, .text(dtype), .text(metric), .int(ann ? 1 : 0)]
+        return try query("select id, score, fts_rank, vec_rank, dist from adhara_hybrid(?, ?, ?, ?, ?, ?, ?, ?)", args).map { r in
             func int(_ k: String) -> Int? { if case .int(let x) = r[k] { return Int(x) }; return nil }
             func real(_ k: String) -> Double? { if case .real(let x) = r[k] { return x }; return nil }
             return Hit(id: Int64(int("id") ?? 0), score: real("score") ?? 0, ftsRank: int("fts_rank"), vecRank: int("vec_rank"), dist: real("dist"))

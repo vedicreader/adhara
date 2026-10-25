@@ -1,4 +1,4 @@
-//! `adhara_hybrid(store, q, qvec, k, filter, dtype, metric)`: FTS5 leg, vector leg and RRF in one SQLite call.
+//! `adhara_hybrid(store, q, qvec, k, filter, dtype, metric, ann)`: FTS5 leg, vector leg and RRF in one SQLite call.
 //! Same rows and order as litesearch's `search` on a litesearch store: `<store>`, `<store>_fts`, `usearch_indices`.
 use half::{f16, slice::HalfFloatSliceExt};
 use rusqlite::vtab::{Context, Filters, IndexConstraintOp, IndexInfo, Module, VTab, VTabConnection, VTabCursor};
@@ -183,8 +183,18 @@ impl Hybrid {
                 if b.len() != v.dim * a.dtype.size() { return Err(err(format!("query has {} bytes, {store} rows have {}", b.len(), v.dim * a.dtype.size()))) }
                 let mut qv = vec![0f32; v.dim];
                 to_f32(b, a.dtype, &mut qv);
-                vec = match (&keep, &v.ann) {
-                    (None, Some(ix)) => { let m = ix.search(&qv, k).map_err(err)?; m.keys.iter().zip(&m.distances).map(|(&x, &d)| (x as i64, d)).collect() }
+                vec = match (&keep, v.ann.as_ref().filter(|_| a.ann)) {
+                    // as litesearch's ann_search: 2k candidates, keys of deleted rows dropped, the first k kept
+                    (None, Some(ix)) => {
+                        let m = ix.search(&qv, 2 * k).map_err(err)?;
+                        let mut live = c.prepare_cached(&format!("select 1 from {} where rowid=?1", q(store)))?;
+                        let mut out = Vec::with_capacity(k);
+                        for (&x, &d) in m.keys.iter().zip(&m.distances) {
+                            if out.len() == k { break }
+                            if live.exists([x as i64])? { out.push((x as i64, d)) }
+                        }
+                        out
+                    }
                     (None, None) => v.exact(&qv, a.metric, k, |_| Ok(true))?,
                     (Some(_), _) => { let s = keep.as_mut().unwrap(); v.exact(&qv, a.metric, k, |id| s.exists([id]))? }
                 };
@@ -197,16 +207,16 @@ impl Hybrid {
 }
 
 const COLS: usize = 5;
-const ARGS: [&str; 7] = ["store", "q", "qvec", "k", "filter", "dtype", "metric"];
+const ARGS: [&str; 8] = ["store", "q", "qvec", "k", "filter", "dtype", "metric", "ann"];
 
-struct Args { store: String, q: Option<String>, qvec: Option<Vec<u8>>, k: usize, filter: Option<String>, dtype: Dtype, metric: Metric }
+struct Args { store: String, q: Option<String>, qvec: Option<Vec<u8>>, k: usize, filter: Option<String>, dtype: Dtype, metric: Metric, ann: bool }
 
 unsafe impl<'vtab> VTab<'vtab> for Hybrid {
     type Aux = ();
     type Cursor = Cur<'vtab>;
     fn connect(db: &mut VTabConnection, _: Option<&()>, _: &[u8], _: &[u8], _: &[u8], _: &[&[u8]]) -> Result<(Cow<'static, CStr>, Self)> {
         let c = unsafe { Connection::from_handle(db.handle())? };
-        Ok((Cow::Borrowed(c"create table x(id, score, fts_rank, vec_rank, dist, store hidden, q hidden, qvec hidden, k hidden, filter hidden, dtype hidden, metric hidden)"),
+        Ok((Cow::Borrowed(c"create table x(id, score, fts_rank, vec_rank, dist, store hidden, q hidden, qvec hidden, k hidden, filter hidden, dtype hidden, metric hidden, ann hidden)"),
             Hybrid { base: Default::default(), db: c, cache: Default::default() }))
     }
     fn best_index(&self, info: &mut IndexInfo) -> Result<bool> {
@@ -243,6 +253,7 @@ unsafe impl VTabCursor for Cur<'_> {
             filter: s(4)?,
             dtype: Dtype::parse(s(5)?.as_deref().unwrap_or("f16"))?,
             metric: Metric::parse(s(6)?.as_deref().unwrap_or("cosine"))?,
+            ann: ix[7].map(|i| a.get::<Option<bool>>(i)).transpose()?.flatten().unwrap_or(true),
         };
         self.rows = self.tab.run(&args)?;
         self.i = 0;

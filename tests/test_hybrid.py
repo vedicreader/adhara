@@ -78,6 +78,25 @@ def test_sees_writes(tmp_path, docs):
     top = db.q('select s.content from adhara_hybrid(?, ?, ?, 1) h cross join store s on s.rowid = h.id', ['store', pre(t), e])
     assert top[0]['content'] == t
 
+def test_ann_switch(tmp_path, docs):
+    "`ann=0` scans exactly, as litesearch's `ann=False`, and finds a row the HNSW sidecar does not hold."
+    db = mk(tmp_path/'a.db', 'store', True, np.float16, docs[:500])
+    t = 'zyzzyva quokka unique words'; e = emb(t, np.float16)
+    db.t.store.insert(dict(content=t, embedding=e))   # written after the index was built, so the sidecar misses it
+    leg = lambda ann: [r['rowid'] for r in db.search(t, e, columns=['rowid'], limit=5, ann=ann, rrf=False)['vec']]
+    ann_sql = 'select id from adhara_hybrid(?, ?, ?, ?, ?, ?, ?, ?)'
+    ours = lambda ann: [r['id'] for r in db.q(ann_sql, ['store', None, e, 5, None, 'f16', 'cosine', ann])]
+    assert ours(0) == leg(False) and ours(0)[0] == db.q('select max(rowid) m from store')[0]['m']
+    assert ours(1) == leg(True) == [r['id'] for r in db.q('select id from adhara_hybrid(?, ?, ?, 5)', ['store', None, e])]
+
+def test_ann_skips_deleted(tmp_path, docs):
+    "The HNSW search drops a key whose row is gone and fills its place, as litesearch's `ann_search` does."
+    db = mk(tmp_path/'d.db', 'store', True, np.float16, docs[:500])
+    e = db.q('select embedding from store where rowid=7')[0]['embedding']
+    db.execute('delete from store where rowid=7')   # the sidecar still holds key 7
+    want = [r['rowid'] for r in db.search('x', e, columns=['rowid'], limit=5, ann=True, rrf=False)['vec']]
+    assert [r['id'] for r in db.q('select id from adhara_hybrid(?, ?, ?, 5)', ['store', None, e])] == want and 7 not in want
+
 def test_errors(stores):
     db = stores[(False, np.float16)]
     with pytest.raises(Exception, match='bytes'): db.q(SQL, ['store', None, b'\x00' * 6, 5, None, 'f16', 'cosine'])

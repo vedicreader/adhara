@@ -3,7 +3,7 @@
 use crate::fold::{fold_token, roman_from};
 use crate::tables::ext_pict;
 use rusqlite::{Connection, Result, ffi};
-use std::{cell::RefCell, collections::HashMap, ffi::{CString, c_char, c_int, c_void}, ptr, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, ffi::{CStr, c_char, c_int, c_void}, ptr, rc::Rc};
 use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -55,6 +55,18 @@ unsafe extern "C" fn x_create(_: *mut c_void, _: *mut *const c_char, _: c_int, o
     ffi::SQLITE_OK
 }
 
+/// The words after `simplify` in litesearch's chain, `porter simplify casefold 1 sanskrit unicodewords`.
+#[cfg(feature = "static")]
+const CHAIN: [&str; 4] = ["casefold", "1", "sanskrit", "unicodewords"];
+
+/// `simplify` as litesearch's chain names it: the same tokens as `adhara`, so a Swift reader opens a store Python built.
+/// Other arguments are refused, since adhara does not reproduce them.
+#[cfg(feature = "static")]
+unsafe extern "C" fn x_create_chain(p: *mut c_void, az: *mut *const c_char, n: c_int, out: *mut *mut ffi::Fts5Tokenizer) -> c_int {
+    let args = (0..n.max(0) as usize).map(|i| unsafe { CStr::from_ptr(*az.add(i)) }.to_bytes());
+    if args.eq(CHAIN.iter().map(|s| s.as_bytes())) { unsafe { x_create(p, az, n, out) } } else { ffi::SQLITE_ERROR }
+}
+
 unsafe extern "C" fn x_delete(_: *mut ffi::Fts5Tokenizer) {}
 
 unsafe extern "C" fn x_tokenize(_: *mut ffi::Fts5Tokenizer, ctx: *mut c_void, _flags: c_int, text: *const c_char, n: c_int,
@@ -90,13 +102,22 @@ unsafe fn fts5_api(db: *mut ffi::sqlite3) -> Result<*mut ffi::fts5_api> {
     if api.is_null() { Err(rusqlite::Error::ModuleError("no fts5_api on this connection".into())) } else { Ok(api) }
 }
 
-/// Register the `adhara` tokenizer on `db`.
-pub fn register(db: &Connection) -> Result<()> {
-    let api = unsafe { fts5_api(db.handle())? };
-    let mut t = ffi::fts5_tokenizer { xCreate: Some(x_create), xDelete: Some(x_delete), xTokenize: Some(x_tokenize) };
-    let name = CString::new("adhara").unwrap();
+type XCreate = unsafe extern "C" fn(*mut c_void, *mut *const c_char, c_int, *mut *mut ffi::Fts5Tokenizer) -> c_int;
+
+fn create(api: *mut ffi::fts5_api, name: &CStr, x: XCreate) -> Result<()> {
+    let mut t = ffi::fts5_tokenizer { xCreate: Some(x), xDelete: Some(x_delete), xTokenize: Some(x_tokenize) };
     let rc = unsafe { ((*api).xCreateTokenizer.unwrap())(api, name.as_ptr(), ptr::null_mut(), &mut t, None) };
     if rc == ffi::SQLITE_OK { Ok(()) } else { Err(rusqlite::Error::SqliteFailure(ffi::Error::new(rc), Some("fts5 xCreateTokenizer".into()))) }
+}
+
+/// Register the `adhara` tokenizer on `db`. The static build also registers `simplify` for litesearch's chain;
+/// the extension does not, since apsw registers its own `simplify` on a Python connection.
+pub fn register(db: &Connection) -> Result<()> {
+    let api = unsafe { fts5_api(db.handle())? };
+    create(api, c"adhara", x_create)?;
+    #[cfg(feature = "static")]
+    create(api, c"simplify", x_create_chain)?;
+    Ok(())
 }
 
 #[cfg(test)]

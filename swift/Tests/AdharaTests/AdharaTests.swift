@@ -6,11 +6,11 @@ import XCTest
 func f32(_ xs: [Float]) -> Data { xs.withUnsafeBufferPointer { Data(buffer: $0) } }
 
 final class AdharaTests: XCTestCase {
-    func makeStore() throws -> Database {
+    func makeStore(tokenizer: String = tokenize) throws -> Database {
         let db = try Database(path: ":memory:")
         try db.exec("""
             create table store(id integer primary key, content text, embedding blob, metadata text);
-            create virtual table store_fts using fts5(content, metadata, tokenize='\(tokenize)', content=store);
+            create virtual table store_fts using fts5(content, metadata, tokenize='\(tokenizer)', content=store);
             """)
         let rows: [(String, [Float], String)] = [("भीष्म spoke to the king", [1, 0], #"{"g": 1}"#),
                                                 ("Krishna smiled", [0, 1], #"{"g": 2}"#),
@@ -37,6 +37,13 @@ final class AdharaTests: XCTestCase {
         XCTAssertEqual(hits[0].vecRank, 0)
         XCTAssertEqual(hits[1].ftsRank, nil)
         XCTAssertEqual(hits[1].dist ?? 0, 1 - 1 / 2.squareRoot(), accuracy: 1e-4)
+    }
+
+    /// Stores litesearch built before adhara name its Python chain; adhara reads them as its own tokenizer.
+    func testLitesearchChain() throws {
+        let db = try makeStore(tokenizer: "porter simplify casefold 1 sanskrit unicodewords")
+        XCTAssertEqual(try db.search(fts: anyOf(["Bheeshma"]), vector: f32([1, 0]), k: 3, dtype: "f32").map(\.id), [1, 3, 2])
+        XCTAssertThrowsError(try db.exec("create virtual table other using fts5(t, tokenize='porter simplify casefold 0 unicodewords')"))
     }
 
     func testFilter() throws {

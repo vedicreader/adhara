@@ -35,7 +35,7 @@ jobs:
     needs: test
     strategy:
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-13]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-14, macos-15-intel]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -67,7 +67,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      id-token: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -78,4 +77,9 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: PyO3/maturin-action@v1
+        env:
+          MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        with:
+          command: upload
+          args: --non-interactive --skip-existing dist/*
