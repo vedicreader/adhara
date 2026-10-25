@@ -3,7 +3,7 @@
 use half::{f16, slice::HalfFloatSliceExt};
 use rusqlite::vtab::{Context, Filters, IndexConstraintOp, IndexInfo, Module, VTab, VTabConnection, VTabCursor};
 use rusqlite::{Connection, OptionalExtension, Result, ffi};
-use std::{borrow::Cow, cell::RefCell, collections::HashMap, ffi::{CStr, c_int}, rc::Rc};
+use std::{borrow::Cow, cell::RefCell, collections::{HashMap, HashSet}, ffi::{CStr, c_int}, rc::Rc};
 use usearch::{Index, IndexOptions, MetricKind, ScalarKind};
 
 fn err(e: impl ToString) -> rusqlite::Error { rusqlite::Error::ModuleError(e.to_string()) }
@@ -80,21 +80,32 @@ impl Vecs {
         out
     }
 
-    /// Exact `k` nearest rowids that pass `keep`, widening the candidate pool until `k` pass; ties by rowid.
-    fn exact(&self, qv: &[f32], m: Metric, k: usize, mut keep: impl FnMut(i64) -> Result<bool>) -> Result<Vec<(i64, f32)>> {
+    /// Exact `k` nearest rowids that `keep` passes, widening the candidate pool until `k` pass; ties by rowid.
+    /// `keep` gets each window of candidates at once and returns those that pass; None passes every row.
+    fn exact(&self, qv: &[f32], m: Metric, k: usize, mut keep: Option<&mut Keep>) -> Result<Vec<(i64, f32)>> {
         let mut d = self.dists(qv, m);
         let cmp = |a: &(f32, u32), b: &(f32, u32)| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1));
-        let (mut out, mut done, mut pool) = (vec![], 0, (k * 8).max(256));
+        let (mut out, mut done, mut pool) = (vec![], 0, pool(k));
         while out.len() < k && done < d.len() {
             let n = pool.min(d.len());
             if n < d.len() { d[done..].select_nth_unstable_by(n - done - 1, cmp); }
             d[done..n].sort_unstable_by(cmp);
-            for &(x, i) in &d[done..n] { let id = self.ids[i as usize]; if keep(id)? { out.push((id, x)); if out.len() == k { break } } }
+            let ids: Vec<i64> = d[done..n].iter().map(|&(_, i)| self.ids[i as usize]).collect();
+            let ok = keep.as_mut().map(|f| f(&ids)).transpose()?;
+            for (&(x, _), id) in d[done..n].iter().zip(ids) {
+                if ok.as_ref().is_none_or(|s| s.contains(&id)) { out.push((id, x)); if out.len() == k { break } }
+            }
             (done, pool) = (n, pool * 4);
         }
         Ok(out)
     }
 }
+
+/// The rowids of a window of candidates that pass a filter.
+type Keep<'a> = dyn FnMut(&[i64]) -> Result<HashSet<i64>> + 'a;
+
+/// The first window of candidates checked against a filter; each later window is four times larger.
+fn pool(k: usize) -> usize { (k * 8).max(256) }
 
 fn stamp(c: &Connection) -> Result<(u64, i64)> { Ok((c.total_changes(), c.query_row("pragma data_version", [], |r| r.get(0))?)) }
 
@@ -164,16 +175,27 @@ impl Hybrid {
 
     fn run(&self, a: &Args) -> Result<Vec<Hit>> {
         let (c, store, k) = (&self.db, a.store.as_str(), a.k);
-        let mut keep = a.filter.as_ref().map(|w| c.prepare_cached(&format!("select 1 from {} where rowid=?1 and ({w})", q(store)))).transpose()?;
+        // one statement for each window of candidates, so an uncorrelated subquery in the filter runs once a window
+        let mut keep = a.filter.as_ref().map(|w| {
+            let head = format!("select rowid from {} where rowid in (", q(store));
+            move |ids: &[i64]| -> Result<HashSet<i64>> {
+                let list = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+                c.prepare(&format!("{head}{list}) and ({w})"))?.query_map([], |r| r.get(0))?.collect()
+            }
+        });
         let mut fts = vec![];
         if let Some(fq) = a.q.as_ref().filter(|s| !s.trim().is_empty()) {
             let f = q(&format!("{store}_fts"));
             let mut st = c.prepare_cached(&format!("select rowid from {f} where {f} match ?1 order by rank limit ?2"))?;
             let mut rows = st.query((fq, if keep.is_some() { -1 } else { k as i64 }))?;
+            let mut n = pool(k);
             while fts.len() < k {
-                let Some(r) = rows.next()? else { break };
-                let id: i64 = r.get(0)?;
-                if keep.as_mut().map_or(Ok(true), |s| s.exists([id]))? { fts.push(id) }
+                let mut ids = Vec::with_capacity(n);
+                while ids.len() < n { let Some(r) = rows.next()? else { break }; ids.push(r.get::<_, i64>(0)?) }
+                let ok = keep.as_mut().map(|f| f(&ids)).transpose()?;
+                for &id in &ids { if ok.as_ref().is_none_or(|s| s.contains(&id)) { fts.push(id); if fts.len() == k { break } } }
+                if ids.len() < n { break }
+                n *= 4;
             }
         }
         let mut vec: Vec<(i64, f32)> = vec![];
@@ -183,9 +205,9 @@ impl Hybrid {
                 if b.len() != v.dim * a.dtype.size() { return Err(err(format!("query has {} bytes, {store} rows have {}", b.len(), v.dim * a.dtype.size()))) }
                 let mut qv = vec![0f32; v.dim];
                 to_f32(b, a.dtype, &mut qv);
-                vec = match (&keep, v.ann.as_ref().filter(|_| a.ann)) {
+                vec = match (keep.is_some(), v.ann.as_ref().filter(|_| a.ann)) {
                     // as litesearch's ann_search: 2k candidates, keys of deleted rows dropped, the first k kept
-                    (None, Some(ix)) => {
+                    (false, Some(ix)) => {
                         let m = ix.search(&qv, 2 * k).map_err(err)?;
                         let mut live = c.prepare_cached(&format!("select 1 from {} where rowid=?1", q(store)))?;
                         let mut out = Vec::with_capacity(k);
@@ -195,8 +217,8 @@ impl Hybrid {
                         }
                         out
                     }
-                    (None, None) => v.exact(&qv, a.metric, k, |_| Ok(true))?,
-                    (Some(_), _) => { let s = keep.as_mut().unwrap(); v.exact(&qv, a.metric, k, |id| s.exists([id]))? }
+                    (false, None) => v.exact(&qv, a.metric, k, None)?,
+                    (true, _) => v.exact(&qv, a.metric, k, keep.as_mut().map(|f| f as &mut Keep))?,
                 };
             }
         }
