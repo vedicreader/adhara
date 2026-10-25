@@ -1,0 +1,17 @@
+name: ci
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: cargo test --release
+      - run: uv venv --python 3.12 && uv pip install maturin pytest apsw numpy litesearch laghu
+      - run: . .venv/bin/activate && maturin develop --release && python -m pytest -q tests
+  swift:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/xcframework.sh
+      - run: swift test

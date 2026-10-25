@@ -1,0 +1,11 @@
+target/
+*.so
+*.dylib
+__pycache__/
+.venv/
+*.sqlite*
+*.usearch*
+.pytest_cache/
+swift/.build/
+swift/AdharaCore.xcframework/
+.build/

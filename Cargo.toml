@@ -1,0 +1,31 @@
+[package]
+name = "adhara"
+version = "0.1.0"
+edition = "2024"
+description = "Native FTS5 tokenizer and hybrid FTS + vector search for SQLite, as one extension for Python and Swift"
+license = "MIT"
+repository = "https://github.com/vedicreader/adhara"
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[features]
+default = []
+ext = ["rusqlite/loadable_extension"]            # a loadable SQLite extension: sqlite3_adhara_init
+python = ["ext", "dep:pyo3"]                     # the Python module; the same file is the extension
+static = ["rusqlite/bundled"]                    # SQLite built in, for Swift: adhara_register
+
+[dependencies]
+caseless = "0.2"
+half = "2.7"
+pyo3 = { version = "=0.29.0", features = ["abi3-py310", "extension-module"], optional = true }
+rusqlite = { version = "0.41.0", features = ["vtab"] }
+unicode-normalization = "0.1"
+unicode-properties = "0.1"
+unicode-segmentation = "1.12"
+usearch = "2.26.5"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

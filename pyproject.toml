@@ -1,0 +1,26 @@
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "adhara"
+dynamic = ["version"]
+description = "Native FTS5 tokenizer and hybrid FTS + vector search for SQLite, as a loadable extension"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{name = "Karthik", email = "karthik.rajgopal@hotmail.com"}]
+keywords = ["sqlite", "fts5", "vector search", "hybrid search", "sanskrit", "tokenizer"]
+classifiers = ["Development Status :: 3 - Alpha", "Programming Language :: Python :: 3", "Programming Language :: Rust",
+               "Topic :: Database", "Topic :: Text Processing :: Indexing"]
+
+[project.urls]
+Repository = "https://github.com/vedicreader/adhara"
+
+[dependency-groups]
+dev = ["pytest>=8", "apsw>=3.50", "numpy>=1.26", "litesearch>=0.1.61"]
+
+[tool.maturin]
+features = ["python"]
+module-name = "adhara._adhara"
+python-source = "python"
