@@ -9,8 +9,8 @@ let local = "swift/AdharaCore.xcframework"
 let core: Target = FileManager.default.fileExists(atPath: "\(Context.packageDirectory)/\(local)")
     ? .binaryTarget(name: "AdharaCore", path: local)
     : .binaryTarget(name: "AdharaCore",
-                    url: "https://github.com/vedicreader/adhara/releases/download/v0.1.1/AdharaCore.xcframework.zip",
-                    checksum: "c4897d6280a0e6e85aa6e3af1ade4e0bddc2100dd78eae257afc7761a6fa86da")
+                    url: "https://github.com/vedicreader/adhara/releases/download/v0.1.2/AdharaCore.xcframework.zip",
+                    checksum: "049cdbefe5dc32133bb904942b12e997201e4c74ee88d39d7d6e8da31c426292")
 
 let package = Package(
     name: "Adhara",
