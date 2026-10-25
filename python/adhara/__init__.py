@@ -7,7 +7,8 @@ ENTRY = 'sqlite3_adhara_init'
 
 def path() -> str:
     "The extension's file; the Python module and the SQLite extension are one file."
-    return _adhara.__file__
+    # py2app's import gives an extension module no `__file__`; its spec still names the file
+    return getattr(_adhara, '__file__', None) or _adhara.__spec__.origin
 
 def load(conn):
     "Load adhara into an apsw or sqlite3 connection and return it. Load it into one SQLite library per process."
