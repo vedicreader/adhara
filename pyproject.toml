@@ -14,13 +14,24 @@ keywords = ["sqlite", "fts5", "vector search", "hybrid search", "sanskrit", "tok
 classifiers = ["Development Status :: 3 - Alpha", "Programming Language :: Python :: 3", "Programming Language :: Rust",
                "Topic :: Database", "Topic :: Text Processing :: Indexing"]
 
-[project.urls]
-Repository = "https://github.com/vedicreader/adhara"
+[project.optional-dependencies]
+dev = ["fastship>=0.1.9", "maturin>=1.9,<2", "pytest>=8", "apsw>=3.50", "numpy>=1.26", "litesearch>=0.1.60", "laghu>=0.3.1"]
 
-[dependency-groups]
-dev = ["pytest>=8", "apsw>=3.50", "numpy>=1.26", "litesearch>=0.1.61"]
+[project.urls]
+Homepage = "https://github.com/vedicreader/adhara"
+Repository = "https://github.com/vedicreader/adhara"
+Issues = "https://github.com/vedicreader/adhara/issues"
+
+[tool.fastship]
+branch = "main"
 
 [tool.maturin]
 features = ["python"]
 module-name = "adhara._adhara"
 python-source = "python"
+
+[tool.uv]
+cache-keys = [{ file = "pyproject.toml" }, { file = "src/**/*.rs" }, { file = "Cargo.toml" }]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

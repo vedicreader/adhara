@@ -35,5 +35,6 @@ fn _adhara(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(forms, m)?)?;
     m.add_function(wrap_pyfunction!(tokens, m)?)?;
     m.add("TOKENIZE", crate::TOKENIZE)?;
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

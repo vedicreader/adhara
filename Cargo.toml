@@ -29,3 +29,9 @@ usearch = "2.26.5"
 opt-level = 3
 lto = true
 codegen-units = 1
+
+# wheels and the xcframework: as release, stripped
+[profile.dist]
+inherits = "release"
+incremental = false
+strip = true

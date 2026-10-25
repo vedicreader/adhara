@@ -1,8 +1,8 @@
 "Native FTS5 tokenizer and hybrid FTS + vector search for SQLite, as a loadable extension."
-from ._adhara import TOKENIZE, fold_token, roman_fold, skeleton, strip_vedic, deva2ascii, forms, tokens
+from ._adhara import __version__, TOKENIZE, fold_token, roman_fold, skeleton, strip_vedic, deva2ascii, forms, tokens
 from . import _adhara
 
-__all__ = ['TOKENIZE', 'ENTRY', 'path', 'load', 'fold_token', 'roman_fold', 'skeleton', 'strip_vedic', 'deva2ascii', 'forms', 'tokens']
+__all__ = ['__version__', 'TOKENIZE', 'ENTRY', 'path', 'load', 'fold_token', 'roman_fold', 'skeleton', 'strip_vedic', 'deva2ascii', 'forms', 'tokens']
 ENTRY = 'sqlite3_adhara_init'
 
 def path() -> str:

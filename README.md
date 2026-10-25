@@ -7,7 +7,7 @@ adhara is the SQLite core under litesearch. The name is Sanskrit for "foundation
 
 The same code runs in Python (as a loadable extension for apsw or sqlite3) and in Swift (as a static library with SQLite built in). A Swift app can open a vault that Python wrote.
 
-`RESULTS.md` has the numbers and the method.
+`RESULTS.md` has the numbers and the method. `DEV.md` has the build and release steps.
 
 ## Python
 
